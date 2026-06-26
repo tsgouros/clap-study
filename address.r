@@ -133,35 +133,80 @@ separateAddress <- function(wholeAddress) {
 
 ## Measure a "distance" between addresses. This is basically a hamming
 ## distance, but using the numeric value of the address number.
+
 compareAddresses <- function(addressOne, addressTwo, verbose=FALSE) { 
-
-    ## convert...
-    first <- separateAddress(addressOne);
-    second <- separateAddress(addressTwo);
-
-    # fail safe: if parser throws NA for any field, return 999.
-    if (nrow(first) == 0 || nrow(second) == 0 || 
-        is.na(first$streetNumber) || is.na(second$streetNumber) ||
-        is.na(first$street)       || is.na(second$street)) {
-      return(999) 
-    }
-    
-    ## ... then compare.
-    streetDist <- stringdist(first$street, second$street);
-    numDist <- abs(first$streetNumber - second$streetNumber);
-
-    if (verbose) cat("Comparing", first$street, "and", second$street,
-                     "streetDist=", streetDist, "numDist=", numDist, "\n");
-    
-    if (streetDist <= 4) {
-        if (numDist == 0) {
-            return(0);
-        } else {
-            return(streetDist + numDist/100);
-        }
+  
+  ## convert...
+  first <- separateAddress(addressOne);
+  second <- separateAddress(addressTwo);
+  
+  # fail safe: if parser throws NA for any field, return 999.
+  if (nrow(first) == 0 || nrow(second) == 0 || 
+      is.na(first$streetNumber) || is.na(second$streetNumber) ||
+      is.na(first$street)       || is.na(second$street)) {
+    return(999) 
+  }
+  
+  # if house numbers are opposite (even and odd), return 999.
+  if ((first$streetNumber %% 2) != (second$streetNumber %% 2)) {
+    return(999)
+  }
+  
+  ## ... then compare.
+  streetDist <- stringdist(first$street, second$street);
+  numDist <- abs(first$streetNumber - second$streetNumber);
+  
+  if (numDist > 2) { return(999)}
+  
+  if (verbose) cat("Comparing", first$street, "and", second$street,
+                   "streetDist=", streetDist, "numDist=", numDist, "\n");
+  
+  if (streetDist <= 4) {
+    if (numDist == 0) {
+      return(0);
     } else {
-        return(streetDist + numDist/10);
+      return(streetDist + numDist/100);
     }
+  } else {
+    return(streetDist + numDist/10);
+  }
 }
 
-
+# Only compares number and street. Input addresses should be clean.
+compareNumName <- function(addressOne, addressTwo, verbose=FALSE) { 
+  
+  ## convert...
+  first <- separateAddress(addressOne);
+  second <- separateAddress(addressTwo);
+  
+  # fail safe: if parser throws NA for any field, return 999.
+  if (nrow(first) == 0 || nrow(second) == 0 || 
+      is.na(first$streetNumber) || is.na(second$streetNumber) ||
+      is.na(first$street)       || is.na(second$street)) {
+    return(99) 
+  }
+  
+  # if house numbers are opposite (even and odd), return 999.
+  if ((first$streetNumber %% 2) != (second$streetNumber %% 2)) {
+    return(99)
+  }
+  
+  ## ... then compare.
+  nameDist <- stringdist(first$streetName, second$streetName);
+  numDist <- abs(first$streetNumber - second$streetNumber);
+  
+  if (numDist > 2) { return(99)}
+  
+  if (verbose) cat("Comparing", first$street, "and", second$street,
+                   "nameDist=", nameDist, "numDist=", numDist, "\n");
+  
+  if (nameDist <= 1) {
+    if (numDist == 0) {
+      return(0);
+    } else {
+      return(nameDist + numDist/100);
+    }
+  } else {
+    return(nameDist + numDist/10);
+  }
+}
