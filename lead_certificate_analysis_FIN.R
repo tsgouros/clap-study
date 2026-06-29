@@ -46,6 +46,7 @@ lead_raw <- read.csv("Lead_Certificates.csv", fileEncoding = "latin1")
 tax_raw <- read.csv("geolocatedDf.csv")
 pvd_dewey <- read.csv("providence_dewey_data.csv")
 
+# Dictionaries
 ordinal_dict <- c(
   "\\b1st\\b"  = "first",
   "\\b2nd\\b"  = "second",
@@ -64,16 +65,42 @@ ordinal_dict <- c(
   "\\b15th\\b" = "fifteenth"
 )
 
+type_dict<- c(
+  "avenue" = "ave", "avenu" = "ave", "ave" = "ave",
+  "street" = "st", "sty" = "st", "steet" = "st", "str" = "st", "stre" = "st", 
+  "ste" = "st", "st" = "st",
+  "boulevard" = "blvd", "blv" = "blvd", "blvd" = "blvd",
+  "court" = "ct", "ct" = "ct",
+  "drive" = "dr", "dr" = "dr",
+  "road" = "rd", "rd" = "rd",
+  "place" = "pl", "pl" = "pl",
+  "lane" = "ln", "ln" = "ln",
+  "terrace" = "ter", "ter" = "ter",
+  "square" = "sq", "sq" = "sq",
+  "parkway" = "pkwy", "pkwy" = "pkwy",
+  "circle" = "cir", "cir" = "cir",
+  "way" = "way"
+)
+
 ################################################################################
 # SECTION 2: LEAD CERTIFICATE CLEANING + EDA
 ################################################################################
 # 2A: LEAD CLEANING
 #
-# The Expiration.Date column contains a mix of real dates and plain English
-# phrases describing expiration rules. These phrases must be converted to actual
-# dates before any analysis or temporal join can be done.
+# String formatting:
+#   - all fields are lowercased.
+#   - the abbreviation "mt" becomes "mount"
+#   - the street type "tr" becomes "ter"
+#   - ordinal street names are standardized to words
+#   - special punctuation is removed
+#   - if Street.Name contains the street type, delete the street type and 
+#     fill in Street.Type accordingly.
 #
-# Rules applied in order:
+# Date formatting:
+#   The Expiration.Date column contains a mix of real dates and plain English
+#   phrases describing expiration rules. These phrases must be converted to 
+#   actual dates before any analysis or temporal join can be done.
+#
 #   - "june 30th" or "in june" expiration is June 30 of the issue year
 #   - "2 year", "interior", "dust wipe" expiration is issue date plus two years
 #   - "no expiration" certificate never expires, assigned sentinel date 9999-12-31
@@ -81,19 +108,44 @@ ordinal_dict <- c(
 #      have. These 2463 records (~1% of data) are dropped later
 #      rather than imputed because the missingness is not random.
 #      Everything else is parsed as a real date using mdy()
-#
-# String fields are lowercased for consistent matching throughout the script.
+
+types_regex <- paste0("(?i)\\b(", paste(names(type_dict), collapse = "|"), ")$")
 
 lead_complete <- lead_raw[complete.cases(lead_raw), ]
 
 lead_clean <- lead_complete %>%
   mutate(
-    Expiration.Date = str_squish(iconv(Expiration.Date, "latin1", "ASCII", sub = " ")),
-    issue_dt        = mdy(Issue.Date, quiet = TRUE),
     Owner           = str_to_lower(Owner),
     Street.Name     = str_to_lower(Street.Name),
     Street.Type     = str_to_lower(Street.Type),
-    Street.Type     = if_else(Street.Type == "ter", "tr", Street.Type)
+    Street.Name = str_replace_all(Street.Name, "\\bmt\\b", "mount"),
+    Street.Type = str_replace_all(Street.Type, "\\tr\\b", "ter"),
+    Street.Name = stringr::str_replace_all(Street.Name, ordinal_dict),
+    Street.Name = stringr::str_remove_all(Street.Name, "[[:punct:]]")
+  ) %>%
+  mutate(
+    existing_type = unname(type_dict[tolower(str_trim(Street.Type))]),
+    is_invalid = is.na(existing_type),
+    hidden_type = if_else(is_invalid, str_extract(Street.Name, types_regex), 
+                          NA_character_),
+    Street.Type = case_when(
+      !is.na(hidden_type) ~ unname(type_dict[(hidden_type)]),
+      !is_invalid ~ existing_type,
+      TRUE ~ Street.Type
+    ),
+    Street.Name = if_else(
+      !is.na(hidden_type),
+      str_remove(Street.Name, paste0("(?i)\\s*\\b", hidden_type, "$")),
+      Street.Name
+    )
+  ) %>%
+  select(-existing_type, -is_invalid, -hidden_type)
+ 
+# Date formatting
+ lead_clean <- lead_clean %>% 
+   mutate(
+    Expiration.Date = str_squish(iconv(Expiration.Date, "latin1", "ASCII", sub = " ")),
+    issue_dt        = mdy(Issue.Date, quiet = TRUE),
     ) %>%
   mutate(
     final_exp_date = case_when(
@@ -204,7 +256,6 @@ print(summary_stats)
 
 # NOTE: lead_geocoded is the output of the geocoder and should be saved to disk
 # after running so that the API call does not need to be repeated on reruns.
-# Uncomment the write.csv and read.csv lines below after the first run.
 ################################################################################
 
 lead_cert_prov <- lead_clean %>%
@@ -216,22 +267,49 @@ lead_cert_prov <- lead_clean %>%
 
 cat("Distinct addresses to geocode:", n_distinct(lead_cert_prov$full_address), "\n")
 
-# # uncomment out if need to geocode again
 # lead_geocoded <- lead_cert_prov %>%
 #  geocode(address = full_address, method = "arcgis",
 #         lat = latitude, long = longitude)
-# 
-# cat("Geocoding complete. Rows with missing coordinates:",
-#     sum(is.na(lead_geocoded$latitude) & is.na(lead_geocoded$longitude)), "\n")
 
-#write.csv(lead_geocoded, "lead_geocoded_cache.csv", row.names = FALSE)
+# The above code might time out. As an alternative, the following code breaks 
+# lead_cert_prov into 'chunks' of 1000 rows each and geocodes one chunk at a time.
 
-lead_geocoded <- read.csv("lead_geocoded_cache.csv", fileEncoding = "CP1252") %>% 
-  mutate(
-    Street.Type = if_else(Street.Type == "ter", "tr", Street.Type),
-    Street.Name = stringr::str_replace_all(Street.Name, ordinal_dict),
-    Street.Name = stringr::str_remove_all(Street.Name, "[[:punct:]]")
-    )
+chunk_size <- 1000
+output_file <- "lead_geocoded_progress.csv"
+
+if (file.exists(output_file)) file.remove(output_file)
+
+n_rows <- nrow(lead_cert_prov)
+chunk_indices <- split(1:n_rows, ceiling(1:n_rows / chunk_size))
+num_chunks <- length(chunk_indices)
+
+cat("Starting geocoding in", num_chunks, "chunks...\n")
+
+for (i in seq_along(chunk_indices)) {
+  cat(paste0("\n--- Processing Chunk ", i, " of ", num_chunks, 
+             " (Rows ", min(chunk_indices[[i]]), "-", max(chunk_indices[[i]]), 
+             ") ---\n"))
+  current_chunk <- lead_cert_prov[chunk_indices[[i]], ]
+  geocoded_chunk <- current_chunk %>%
+    geocode(address = full_address, method = "arcgis",
+            lat = latitude, long = longitude)
+  
+  write_csv(geocoded_chunk, output_file, append = TRUE, col_names = (i == 1))
+  
+  cat(paste0("Chunk ", i, " saved to disk.\n"))
+  
+  # Pause for 5 seconds between chunks to give the ArcGIS server a little break.
+  Sys.sleep(5) 
+}
+
+# lead_geocoded <- read_csv(output_file, fileEncoding = "CP1252")
+
+cat("Geocoding complete. Rows with missing coordinates:",
+    sum(is.na(lead_geocoded$latitude) & is.na(lead_geocoded$longitude)), "\n")
+
+# Uncomment to re-load csv file.
+# write.csv(lead_geocoded, "lead_geocoded.csv", row.names = FALSE)
+
 summary(lead_geocoded)
 
 ################################################################################
@@ -427,6 +505,12 @@ owners_sf <- st_as_sf(tax_clean,
 
 tax_clean <- tax_clean %>%
   mutate(
+    propertyAddress = str_replace_all(propertyAddress, "\\btr\\b", "ter"),
+    propertyCompositeAddress = str_replace_all(propertyCompositeAddress, 
+                                               "\\btr\\b", "ter"),
+    propertyAddress = str_replace_all(propertyAddress, "\\bmt\\b", "mount"),
+    propertyCompositeAddress = str_replace_all(propertyCompositeAddress, 
+                                               "\\bmt\\b", "mount"),
     propertyCompositeAddress = str_replace_all(propertyCompositeAddress, 
                                                " 2(\\d{3})", " 02\\1"),
     dist_meters = as.numeric(st_distance(props_sf, owners_sf, by_element = TRUE)),
@@ -938,10 +1022,10 @@ quantile(force_match$matched_distance,
 # cat("Total rows after year by year join:", nrow(joined_by_year), "\n")
 
 # Missingness check
-cbind(
-  count = table(is.na(joined_by_year$Certificate.Number)),
-  pct = round(prop.table(table(is.na(joined_by_year$Certificate.Number)))*100, 1)
-  )
+# cbind(
+#   count = table(is.na(joined_by_year$Certificate.Number)),
+#   pct = round(prop.table(table(is.na(joined_by_year$Certificate.Number)))*100, 1)
+#   )
 
 ################################################################################
 # Single year tax-lead join, for debugging
@@ -952,23 +1036,24 @@ cbind(
 # Unmatched rows are separated from the matched ones in order to preserve them.
 # For each matched row, the tax and lead addresses are compared. The match is
 # kept only if 1) the address_dist is 0 (exact match) or 2) the address_dist is
-# 0.2 AND the property is a 2-5 family property.
+# <= 1.02 AND the property is a 2-5 family property.
 
 source("address.r")
+
+clean_address <- function(addr) {
+  if (is.null(addr)) return(addr)
+  addr %>%
+    stringr::str_remove_all("\\bnull\\b") %>%
+    stringr::str_remove("\\b(n|s|e|w|ne|nw|se|sw|north|south|east|west)$") %>%
+    stringr::str_replace("^(\\d+)[-/]\\d+", "\\1") %>%
+    stringr::str_squish()
+}
+
 
 test_yr <- 2020
 
 tax_yr  <- tax_sf_classified %>% filter(property_year == test_yr)
 lead_yr <- lead_sf_expanded  %>% filter(active_year  == test_yr)
-
-clean_address <- function(addr) {
-  if (is.null(addr)) return(addr)
-  
-  addr %>%
-    # Fix hyphenated/slashed house numbers (e.g., "123-125 Main" -> "123 Main")
-    stringr::str_replace("^(\\d+)[-/]\\d+", "\\1") %>%
-    stringr::str_squish()
-}
 
 test_lead_join <- function(distance_threshold) {
   
@@ -1036,20 +1121,6 @@ test_lead_join <- function(distance_threshold) {
       # Shrink duplicate NA rows for a single property down to one row
       distinct(platLotUnit, Certificate.Number, .keep_all = TRUE)
     
-    # # Apply cutoff threshold.
-    # if (!is.null(cutoff_score)) {
-    #   best_match <- best_match %>%
-    #     mutate(
-    #       # Preserve tax rows that have a match but don't meet the cutoff.
-    #       is_wiped_out = address_dist > cutoff_score,
-    #       Certificate.Number = ifelse(is_wiped_out, NA, Certificate.Number),
-    #       full_address = ifelse(is_wiped_out, NA, full_address)
-    #     ) %>%
-    #     # If erasing bad matches created duplicate NA rows for a single property, 
-    #     # shrink them to one row.
-    #     distinct(platLotUnit, Certificate.Number, .keep_all = TRUE)
-    # }
-    
   } else {
     best_match <- matched
   }
@@ -1077,7 +1148,7 @@ test_lead_join <- function(distance_threshold) {
 result_45 <- test_lead_join(distance_threshold = 45)
 
 # Test 2: 20m 
-result_20 <- test_lead_join(distance_threshold = 20)
+# result_20 <- test_lead_join(distance_threshold = 20)
 
 # Test 3: 100m 
 result_100 <- test_lead_join(distance_threshold = 100)
