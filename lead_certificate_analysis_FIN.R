@@ -1,4 +1,4 @@
-# LEAD CERTIFICATE ANALYSIS
+# LEAD CERTIFICATE ANALYSIS ####################################################
 
 # Research question: What percentage of rental properties in Rhode Island and 
 # Providence are compliant with lead safety laws, and are absentee landlords
@@ -11,7 +11,7 @@
 #   NHoods: Providence neighborhood shapefiles
 
 # Join strategy overview:
-#   This script uses a three layer classification approach.
+#   This script uses a three-layer classification approach.
 #   Layer 1 is computed from tax data alone before any join occurs and assigns
 #   rental_status to every property using the distance between the owner mailing
 #   address and the property address.
@@ -34,8 +34,8 @@
 # any spatial operation.
 
 ################################################################################
-# SECTION 1: LIBRARIES AND DATA LOADING
-################################################################################
+# SECTION 1: LIBRARIES AND DATA LOADING #####
+
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -83,10 +83,9 @@ type_dict<- c(
 )
 
 ################################################################################
-# SECTION 2: LEAD CERTIFICATE CLEANING + EDA
-################################################################################
-# 2A: LEAD CLEANING
-#
+# SECTION 2: LEAD CERTIFICATE CLEANING + EDA ####
+
+## 2A: LEAD CLEANING ####
 # String formatting:
 #   - all fields are lowercased.
 #   - the abbreviation "mt" becomes "mount"
@@ -161,10 +160,9 @@ lead_clean <- lead_complete %>%
     )
   )
 
-################################################################################
-# 2B: LEAD EXPLORATORY DATA ANALYSIS
+## 2B: LEAD EXPLORATORY DATA ANALYSIS ####
 #
-# NUMBER OF UNIQUE PROPERTIES/ADDRESSES
+# NUMBER OF UNIQUE PROPERTIES
 # A property is defined as a distinct combination of street number, street name,
 # street type, and city because the same street name exists across multiple
 # cities and unit differences at the same address represent the same building.
@@ -245,7 +243,7 @@ summary_stats <- tibble(
 print(summary_stats)
 
 ################################################################################
-# SECTION 3: GEOCODING LEAD CERTIFICATES (PROVIDENCE ONLY)
+# SECTION 3: GEOCODING LEAD CERTIFICATES (PROVIDENCE ONLY) ####
 
 # Analysis is scoped to Providence because property tax data is available only
 # for Providence addresses. Geocoding is run on distinct addresses rather than
@@ -313,7 +311,7 @@ cat("Geocoding complete. Rows with missing coordinates:",
 summary(lead_geocoded)
 
 ################################################################################
-# SECTION 4: VISUALIZATION - ACTIVE CERTIFICATES OVER TIME
+# SECTION 4: VISUALIZATION - ACTIVE CERTIFICATES OVER TIME ####
 
 # To plot how many certificates were active in each year the data must be
 # expanded from one row per certificate into one row per certificate per active
@@ -460,7 +458,7 @@ graph_certs_over_time <- ggplot(
 graph_certs_over_time
 
 ################################################################################
-# SECTION 5: TAX DATA CLEANING AND LAYER 1 RENTAL CLASSIFICATION
+# SECTION 5: TAX DATA CLEANING AND RENTAL CLASSIFICATION (LAYER 1) ####
 
 # Layer 1 is the rental status classification derived entirely from the tax data
 # before any join with the lead registry. It must be computed here and never
@@ -585,7 +583,7 @@ cat("\nPanel vs unique property counts by rental status:\n")
 print(comparison_table)
 
 ################################################################################
-# SECTION 6: LEAD CERTIFICATE DEDUPLICATION AND TEMPORAL EXPANSION
+# SECTION 6: LEAD CERTIFICATE DEDUPLICATION AND TEMPORAL EXPANSION (LAYER 2) ####
 #
 # Three issues were found in the raw lead registry data that must be resolved
 # before the temporal expansion and spatial join can produce accurate results.
@@ -726,7 +724,7 @@ tax_sf_classified <- tax_classified %>%
   st_as_sf(coords = c("propertyLong", "propertyLat"), crs = st_crs("EPSG:4269"))
 
 ################################################################################
-# SECTION 6B: RENEWAL RATE ANALYSIS
+# 6B: RENEWAL RATE ANALYSIS ####
 
 # This section is separate from the join pipeline and produces no object used
 # downstream. It answers DeeAnn's question about whether properties are staying
@@ -854,23 +852,15 @@ cert_windows_lead %>%
 
 
 ################################################################################
-# ADDRESS CHECK
-# 
+## 6C: ADDRESS CHECK ####
+
 # Each address in the lead registry should match to an address in the property 
 # tax records. To check this, lead and tax are joined, with lead as the left 
 # table.
 
-# First, lead needs to be filtered so that only the years that also exist in
-# tax are matched.
-
 max_tax_yr <- max(tax_sf_classified$property_year, na.rm = TRUE)
 lead_check <- lead_sf_expanded %>%
    filter(active_year <= max_tax_yr)
- 
-# lead_tax_join: 
-#   Spatially joins lead and tax, with lead as anchoring table. 
-#   Returns all tax addresses that fall within a 45m radius of the given lead 
-#   address.
 
 lead_years <- sort(unique(lead_sf_expanded$active_year))
 
@@ -940,103 +930,25 @@ quantile(force_match$matched_distance,
          na.rm = TRUE)
 
 ################################################################################
-# SECTION 7: YEAR BY YEAR SPATIAL JOIN (LAYER 2 EXECUTION)
+# SECTION 7: YEAR BY YEAR SPATIAL JOIN (LAYER 3) ####
 #
 # The join loops over each year present in the tax data. In each iteration both
 # datasets are filtered to that year before the spatial join is run. This means
 # a certificate that was not active in year Y cannot match a tax record from Y
 # regardless of how close the coordinates are.
-#
-#
-# The right side of the join selects only the columns needed to keep the output
-# manageable. rental_status and all other Layer 1 fields flow through from
-# tax_sf_classified on the left side without needing to be re joined.
+
+# A spatial join is conducted on tax (tax_sf_classified) and lead 
+# (lead_sf_expanded) so that all lead properties that fall within a certain 
+# radius of the given tax property are returned.
+# Unmatched rows are separated from the matched ones in order to preserve them.
+# For each matched row, the two tax and lead addresses are compared. The match is
+# kept only if 1) the address_dist is 0 (exact match) or 2) the address_dist is
+# <= 1.02 (house numbers differ by 2 plus allowance of 1 string character diff)
+# AND the property is a 2-5 family property.
 #
 # NULL is returned for years where either dataset slice is empty so that map_dfr
 # can skip them cleanly.
 ################################################################################
-
-# source("address.r")
-
-# This is the tax-lead join. Commented out for now, while I work on getting
-# a one-year join to work.
-#
-# years_to_join <- sort(unique(tax_sf_classified$property_year))
-# 
-# cat("Years to join:", paste(range(years_to_join), collapse = " to "), "\n")
-# 
-# joined_by_year <- map_dfr(years_to_join, function(yr) {
-#   tax_yr  <- tax_sf_classified %>% filter(property_year == yr)
-#   lead_yr <- lead_sf_expanded  %>% filter(active_year  == yr)
-#   
-#   if (nrow(tax_yr) == 0 || nrow(lead_yr) == 0) {
-#     message("Skipping year ", yr, ": one or both slices are empty")
-#     return(NULL)
-#   }
-#   
-#   message("Joining year ", yr,
-#           " | tax rows: ", nrow(tax_yr),
-#           " | lead rows: ", nrow(lead_yr))
-#   
-#   spatial_join <- st_join(
-#     tax_yr,
-#     lead_yr %>% select(
-#       Certificate.Number, Certificate, active_year,
-#       issue_yr, exp_yr, full_address
-#     ),
-#     join = st_is_within_distance,
-#     dist = 47
-#   ) %>%
-#     mutate(join_year = yr)
-#   
-#   unmatched <- spatial_join %>% filter(is.na(Certificate.Number))
-#   matched <- spatial_join %>% filter(!is.na(Certificate.Number))
-#   
-#   message("  -> Spatial Join Results | Matched: ", nrow(matched), 
-#           " rows | Unmatched: ", nrow(unmatched), " rows")
-#   
-#   if (nrow(matched) >0) {
-#     best_match <- matched %>%
-#       group_by(platLotUnit) %>%
-#       rowwise() %>%
-#       mutate(
-#         address_dist = compareAddresses(propertyCompositeAddress, full_address)
-#       ) %>%
-#       ungroup() %>%
-#       group_by(platLotUnit) %>%
-#       filter(address_dist == min(address_dist)) %>%
-#       ungroup() %>%
-#       select(-address_dist)
-#   } else {
-#     best_match <- matched
-#   }
-# 
-#   yr_slice <- bind_rows(best_match, unmatched)
-#   message("  -> Summary for ", yr, ":\n",
-#           "     - Final table size: ", nrow(yr_slice), " rows\n",
-#           "     - Target baseline was: >= ", nrow(tax_yr), " rows\n")
-#   return(yr_slice)
-#     
-# })
-# 
-# cat("Total rows after year by year join:", nrow(joined_by_year), "\n")
-
-# Missingness check
-# cbind(
-#   count = table(is.na(joined_by_year$Certificate.Number)),
-#   pct = round(prop.table(table(is.na(joined_by_year$Certificate.Number)))*100, 1)
-#   )
-
-################################################################################
-# Single year tax-lead join, for debugging
-#
-# First, a spatial join is conducted on tax (tax_sf_classified) and lead 
-# (lead_sf_expanded) so all lead properties that fall within a certain radius of
-# the given tax property are returned.
-# Unmatched rows are separated from the matched ones in order to preserve them.
-# For each matched row, the tax and lead addresses are compared. The match is
-# kept only if 1) the address_dist is 0 (exact match) or 2) the address_dist is
-# <= 1.02 AND the property is a 2-5 family property.
 
 source("address.r")
 
@@ -1049,41 +961,46 @@ clean_address <- function(addr) {
     stringr::str_squish()
 }
 
+years_to_join <- sort(unique(tax_sf_classified$property_year))
+cat("Years to join:", paste(range(years_to_join), collapse = " to "), "\n")
 
-test_yr <- 2020
+# The threshold is 47m because 90% of lead addresses have their nearest match 
+# within this distance, as found in Address Check.
+DISTANCE_THRESHOLD <- 47
 
-tax_yr  <- tax_sf_classified %>% filter(property_year == test_yr)
-lead_yr <- lead_sf_expanded  %>% filter(active_year  == test_yr)
-
-test_lead_join <- function(distance_threshold) {
+joined_by_year <- map_dfr(years_to_join, function(yr) {
   
-  cat("\n========================================\n")
-  cat("RUNNING TEST: Dist =", distance_threshold, "m\n")
-  cat("========================================\n")
+  tax_yr  <- tax_sf_classified %>% filter(property_year == yr)
+  lead_yr <- lead_sf_expanded  %>% filter(active_year  == yr)
+
+  if (nrow(tax_yr) == 0 || nrow(lead_yr) == 0) {
+    message("Skipping year ", yr, ": one or both slices are empty")
+    return(NULL)
+  }
   
-  cat("Running spatial join...\n")
-  tspatial_join <- st_join(
+  message("Joining year ", yr,
+          " | tax rows: ", nrow(tax_yr),
+          " | lead rows: ", nrow(lead_yr))
+  
+  spatial_join <- st_join(
     tax_yr,
     lead_yr %>% select(
       Certificate.Number, Certificate, active_year, issue_yr, exp_yr, 
+      issue_dt, final_exp_date,
       full_address, Street.No, Street.Name, Street.Type, Unit
     ),
     join = st_is_within_distance,
-    dist = distance_threshold
+    dist = DISTANCE_THRESHOLD
   ) %>%
-    mutate(join_year = test_yr)
+    mutate(join_year = yr)
   
-  # Separate matched and unmatched rows.
-  unmatched <- tspatial_join %>% filter(is.na(Certificate.Number))
-  matched   <- tspatial_join %>% filter(!is.na(Certificate.Number))
+  unmatched <- spatial_join %>% filter(is.na(Certificate.Number))
+  matched   <- spatial_join %>% filter(!is.na(Certificate.Number))
   
-  cat("Spatial Join Results:\n")
-  cat(" - Matched:", nrow(matched), "rows\n")
-  cat(" - Unmatched:", nrow(unmatched), "rows\n")
+  message("  -> Spatial Join Results | Matched: ", nrow(matched), 
+          " rows | Unmatched: ", nrow(unmatched), " rows")
   
-  # For matched rows, compare addresses.
   if (nrow(matched) > 0) {
-    cat("Running address comparisons...\n")
     best_match <- matched %>%
       tidyr::unite(
         col = "constructed_lead_address", 
@@ -1099,10 +1016,10 @@ test_lead_join <- function(distance_threshold) {
       rowwise() %>%
       mutate(
         address_dist = compareNumName(clean_tax_addr, clean_lead_addr)
-        ) %>%
+      ) %>%
       ungroup() %>%
       
-      # Logic block for address scores
+      # Core logic block 
       mutate(
         valid_match = (address_dist == 0) | 
           (address_dist <= 1.02 & tolower(propertyDesc) == "2-5 family"),
@@ -1115,53 +1032,213 @@ test_lead_join <- function(distance_threshold) {
         )
       ) %>%
       group_by(platLotUnit) %>%
-      filter(!mismatch| all(mismatch)) %>%
+      filter(!mismatch | all(mismatch)) %>%
       ungroup() %>%
       
-      # Shrink duplicate NA rows for a single property down to one row
       distinct(platLotUnit, Certificate.Number, .keep_all = TRUE)
     
   } else {
     best_match <- matched
   }
   
-  # Recombine matched and unmatched into one final dataset
-  final_dataset <- bind_rows(best_match, unmatched) %>%
-    select(
-      propertyAddress, 
-      constructed_lead_address,
-      propertyDesc,
-      address_dist,
-      Certificate.Number
-    )
+  yr_slice <- bind_rows(best_match, unmatched)
   
-  cat("Final Results:\n")
-  cat(" - Original Tax Baseline:", nrow(tax_yr), "rows\n")
-  cat(" - Final Output Rows:", nrow(final_dataset), "rows\n")
+  message("  -> Summary for ", yr, ":\n",
+          "     - Final table size: ", nrow(yr_slice), " rows\n",
+          "     - Target baseline was: >= ", nrow(tax_yr), " rows\n")
   
-  return(final_dataset)
+  return(yr_slice)
+})
 
-}
+cat("Total rows after year-by-year execution loop:", nrow(joined_by_year), "\n")
 
-# TESTS
-# Test 1: 45m 
-result_45 <- test_lead_join(distance_threshold = 45)
+# Missingness check
+cbind(
+  count = table(is.na(joined_by_year$Certificate.Number)),
+  pct = round(prop.table(table(is.na(joined_by_year$Certificate.Number))) * 100, 1)
+)
 
-# Test 2: 20m 
-# result_20 <- test_lead_join(distance_threshold = 20)
+## Single year tax-lead join, for debugging ####
 
-# Test 3: 100m 
-result_100 <- test_lead_join(distance_threshold = 100)
+# test_yr <- 2020
+# 
+# tax_yr  <- tax_sf_classified %>% filter(property_year == test_yr)
+# lead_yr <- lead_sf_expanded  %>% filter(active_year  == test_yr)
+# 
+# test_lead_join <- function(distance_threshold) {
+#   
+#   cat("\n========================================\n")
+#   cat("RUNNING TEST: Dist =", distance_threshold, "m\n")
+#   cat("========================================\n")
+#   
+#   cat("Running spatial join...\n")
+#   tspatial_join <- st_join(
+#     tax_yr,
+#     lead_yr %>% select(
+#       Certificate.Number, Certificate, active_year, issue_yr, exp_yr, 
+#       full_address, Street.No, Street.Name, Street.Type, Unit
+#     ),
+#     join = st_is_within_distance,
+#     dist = distance_threshold
+#   ) %>%
+#     mutate(join_year = test_yr)
+#   
+#   # Separate matched and unmatched rows.
+#   unmatched <- tspatial_join %>% filter(is.na(Certificate.Number))
+#   matched   <- tspatial_join %>% filter(!is.na(Certificate.Number))
+#   
+#   cat("Spatial Join Results:\n")
+#   cat(" - Matched:", nrow(matched), "rows\n")
+#   cat(" - Unmatched:", nrow(unmatched), "rows\n")
+#   
+#   # For matched rows, compare addresses.
+#   if (nrow(matched) > 0) {
+#     cat("Running address comparisons...\n")
+#     best_match <- matched %>%
+#       tidyr::unite(
+#         col = "constructed_lead_address", 
+#         Street.No, Street.Name, Street.Type, 
+#         sep = " ", 
+#         na.rm = TRUE,    
+#         remove = FALSE    
+#       ) %>%
+#       mutate(
+#         clean_tax_addr = clean_address(propertyAddress),
+#         clean_lead_addr = clean_address(constructed_lead_address)
+#       ) %>%
+#       rowwise() %>%
+#       mutate(
+#         address_dist = compareNumName(clean_tax_addr, clean_lead_addr)
+#         ) %>%
+#       ungroup() %>%
+#       
+#       # Logic block for address scores
+#       mutate(
+#         valid_match = (address_dist == 0) | 
+#           (address_dist <= 1.02 & tolower(propertyDesc) == "2-5 family"),
+#         mismatch = !valid_match,
+#         
+#         across(
+#           c(Certificate.Number, Certificate, active_year, issue_yr, exp_yr, 
+#             full_address, Street.No, Street.Name, Street.Type, Unit),
+#           ~ ifelse(mismatch, NA, .)
+#         )
+#       ) %>%
+#       group_by(platLotUnit) %>%
+#       filter(!mismatch| all(mismatch)) %>%
+#       ungroup() %>%
+#       
+#       # Shrink duplicate NA rows for a single property down to one row
+#       distinct(platLotUnit, Certificate.Number, .keep_all = TRUE)
+#     
+#   } else {
+#     best_match <- matched
+#   }
+#   
+#   # Recombine matched and unmatched into one final dataset
+#   final_dataset <- bind_rows(best_match, unmatched) %>%
+#     select(
+#       propertyAddress, 
+#       constructed_lead_address,
+#       propertyDesc,
+#       address_dist,
+#       Certificate.Number
+#     )
+#   
+#   cat("Final Results:\n")
+#   cat(" - Original Tax Baseline:", nrow(tax_yr), "rows\n")
+#   cat(" - Final Output Rows:", nrow(final_dataset), "rows\n")
+#   
+#   return(final_dataset)
+# 
+# }
+# 
+# # TESTS
+# # Test 1: 45m 
+# result_45 <- test_lead_join(distance_threshold = 45)
+# 
+# # Test 2: 20m 
+# # result_20 <- test_lead_join(distance_threshold = 20)
+# 
+# # Test 3: 100m 
+# result_100 <- test_lead_join(distance_threshold = 100)
 
 
 ################################################################################
-# SECTION 8: MATCH QUALITY and MAPS
+# SECTION 8: RENTAL COMPLIANCE ANALYSIS ####
 
 # Now after the two datasets have been temporally joined, 
 # can attempt to move forward through mapping and investigating the initial 
 # mismatch issue based on the graphs 
 ################################################################################
 
+rentals <- joined_by_year %>% filter(lead_law_relevant)
+n_distinct(rentals$platLotUnit)
+
+# Q: How many properties are in the lead registry at all, over the entire time span?
+
+property_baseline <- rentals %>%
+  group_by(platLotUnit) %>%
+  summarise(
+    total_years_observed = n(),
+    total_certs = n_distinct(Certificate.Number, na.rm = TRUE),
+    ever_registered = total_certs > 0 
+  ) %>%
+  ungroup()
+
+cbind(
+  count = table(property_baseline$ever_registered),
+  pct = round(prop.table(table(property_baseline$ever_registered))*100, 1)
+)
+
+# A: 33.2% of rental properties have at least one certificate. 66.8% have never 
+# registered.
+
+# Q: How many properties have an unbroken chain of renewals since first filing?
+
+# Get one row per unique certificate window per property
+property_cert_windows <- rentals %>%
+  filter(!is.na(Certificate.Number)) %>%
+  distinct(platLotUnit, Certificate.Number, issue_dt, final_exp_date) %>%
+  arrange(platLotUnit, issue_dt)
+
+# Calculate the gaps and evaluate consistent renewal
+property_renewals <- property_cert_windows %>%
+  group_by(platLotUnit) %>%
+  mutate(
+    next_issue_dt = lead(issue_dt),
+    
+    days_gap = as.numeric(difftime(next_issue_dt, final_exp_date, units = "days")),
+    
+    # Valid if renewed within 1 year after expiration, or up to 2 years early
+    was_renewed = !is.na(next_issue_dt) & days_gap <= 365 & days_gap >= -730
+  ) %>%
+
+    summarise(
+    # How many times did a certificate expire and require a renewal?
+    renewal_opportunities = sum(!is.na(next_issue_dt)),
+    
+    # How many times did they successfully renew within the buffer?
+    successful_renewals = sum(was_renewed, na.rm = TRUE),
+    
+    # TRUE if they renewed on time, every single time. 
+    # FALSE if they missed a deadline. 
+    # NA if they only ever had 1 certificate (no renewal needed yet).
+    consistently_renewed = case_when(
+      renewal_opportunities == 0 ~ NA, 
+      TRUE ~ (renewal_opportunities == successful_renewals)
+    )
+  ) %>%
+  ungroup()
+
+cbind(
+  count = table(property_renewals$consistently_renewed),
+  pct = round(prop.table(table(property_renewals$consistently_renewed))*100, 1)
+)
+
+# A: 30.2% of properties have consistently renewed since first registering. 
+
+## 8B: MATCH QUALITY and MAPS ####
 # This was the inital code used to map the joined datset to get a picture as to 
 # where the certificates are concentrated to the properties in the property 
 # tax data
